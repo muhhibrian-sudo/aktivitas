@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tracer & Aktivitas Harian Teknisi - Toko Komputer</title>
+  <link rel="stylesheet" href="style.css?v=20261020_3" />
+</head>
+<body>
+
+  <!-- HALAMAN LOGIN UTAMA (Mencegah orang luar membaca data) -->
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="login-logo">💻</div>
+      <h2>Login Sistem Tracer Toko</h2>
+      <p>Silakan masukkan password untuk membuka data servis & aktivitas harian teknisi.</p>
+
+      <div id="loginErrorBox" class="login-error">Password yang Anda masukkan salah!</div>
+
+      <form onsubmit="handleInitialLogin(event)">
+        <div class="login-input-wrap">
+          <label>Password Akses *</label>
+          <input
+            type="password"
+            id="initialPasswordInput"
+            placeholder="Masukkan password..."
+            required
+            autocomplete="current-password"
+          />
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center; padding:0.75rem; font-size:0.95rem;">
+          🔓 Masuk ke Sistem
+        </button>
+      </form>
+
+      <div style="margin-top:1.25rem; padding-top:1rem; border-top:1px solid #e2e8f0; font-size:0.76rem; color:#64748b; text-align:left;">
+        <div>💡 <b>Info Akses Default:</b></div>
+        <div style="margin-top:0.25rem;">• Password Lihat/Tracer Saja: <code>toko123</code></div>
+        <div>• Password Full Admin (Bisa Edit & Klik 2x): <code>admin123</code></div>
+        <div style="margin-top:0.25rem; font-style:italic;">(Password dapat diubah kapan saja melalui menu Admin)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WRAPPER UTAMA APLIKASI (Hanya tampil setelah Login) -->
+  <div id="mainAppWrapper" style="display:none;">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand-title">
+          <div class="brand-icon">💻</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <h1>Tracer & Aktivitas Harian Teknisi</h1>
+              <span id="roleBadge" class="status-badge" style="background:#334155; color:#fff; border:1px solid #64748b;">MODE LIHAT</span>
+            </div>
+            <div class="brand-subtitle">Sistem Pelacakan Servis Laptop, PC & Printer — Siap Online GitHub</div>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <span id="syncStatus" class="sync-indicator" title="Status penyimpanan">
+            <span class="sync-dot"></span>
+            <span id="syncText">Data Tersimpan (250 Unit)</span>
+          </span>
+
+          <!-- Input File Global untuk Import CSV / JSON -->
+          <input type="file" id="importFileInput" accept=".csv,.json" style="display:none" onchange="handleImportFile(event)" />
+
+          <!-- Tombol-tombol Khusus Admin (Hanya muncul jika login sebagai Admin) -->
+          <div id="adminHeaderButtons" style="display:none; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+            <button class="btn btn-primary" onclick="openNewUnitModal()">+ Unit Servis Baru</button>
+            <button class="btn btn-outline" style="border-color:#93c5fd; color:#dbeafe;" onclick="openTechManagerModal()">👨‍🔧 Kelola Teknisi / Magang</button>
+            <button class="btn btn-success" onclick="exportExcelFormatCSV()">📥 Export Excel (.csv)</button>
+            <button class="btn btn-outline" onclick="triggerImportFilePicker()">📤 Import CSV/JSON Baru</button>
+            <button class="btn btn-outline" onclick="openPasswordModal()" title="Ubah Password Login & Admin">🔑 Ubah Password</button>
+            <button class="btn btn-outline" onclick="openGithubModal()">🌐 Panduan GitHub</button>
+            <button class="btn btn-outline" style="border-color:#f87171; color:#fecaca;" onclick="exitAdminMode()">🔒 Keluar Mode Admin</button>
+          </div>
+
+          <!-- Tombol Buka Mode Admin (Muncul saat dalam Mode Lihat Saja) -->
+          <button id="btnUnlockAdmin" class="btn btn-primary" onclick="openAdminUnlockModal()">
+            🔐 Login Admin (Edit Data)
+          </button>
+
+          <!-- Tombol Kunci Layar / Logout -->
+          <button class="btn btn-outline" onclick="logoutSystem()" title="Kunci halaman & kembali ke layar login">
+            🚪 Kunci Layar
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+
+      <!-- Bar Warna Teknisi -->
+      <section class="tech-legend-bar">
+        <div style="display:flex; align-items:center; justify-content:space-between; width:100%; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.2rem;">
+          <span class="legend-label">🎨 Filter Teknisi <span style="font-weight:500; text-transform:none; color:#64748b;">(Klik untuk filter • Klik ✏️ pada nama untuk edit):</span></span>
+          <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-success btn-sm" onclick="triggerImportFilePicker()" style="font-size:0.76rem; padding:0.28rem 0.7rem;">
+              📤 Import File CSV Baru
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openTechManagerModal()" style="font-size:0.76rem; padding:0.28rem 0.7rem;">
+              👨‍🔧 + Tambah / Edit Teknisi & Magang
+            </button>
+          </div>
+        </div>
+        <div id="techLegendContainer" style="display:flex; flex-wrap:wrap; gap:0.5rem; width:100%;"></div>
+      </section>
+
+      <!-- Statistik Cepat -->
+      <section class="stats-grid" id="statsContainer">
+        <!-- Dirender otomatis oleh app.js -->
+      </section>
+
+      <!-- Panel Pencarian / Tracer -->
+      <section class="controls-panel">
+        <div class="search-row">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input
+              type="text"
+              id="searchInput"
+              placeholder="Ketik Nama Pemilik, Seri Laptop/Printer (misal: Thinkpad, A314, X441, Epson), Warna, atau Keluhan..."
+              oninput="handleSearchChange()"
+            />
+          </div>
+
+          <select id="categoryFilter" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">Semua Perangkat</option>
+            <option value="Laptop / Notebook">💻 Laptop / Notebook</option>
+            <option value="PC / Komputer">🖥️ PC / Komputer</option>
+            <option value="Printer">🖨️ Printer</option>
+            <option value="MacBook">🍎 MacBook</option>
+            <option value="Storage / Aksesoris">💾 Storage / Aksesoris</option>
+          </select>
+
+          <select id="statusFilter" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">Semua Status</option>
+            <option value="Dalam Pengerjaan">⏳ Dalam Pengerjaan</option>
+            <option value="Selesai (Siap Diambil)">✅ Selesai (Siap Diambil)</option>
+            <option value="Sudah Diambil">📦 Sudah Diambil</option>
+            <option value="Cancel">❌ Cancel / Batal</option>
+          </select>
+
+          <select id="sortFilter" class="filter-select" onchange="applyFilters()">
+            <option value="newest">Urutkan: Terbaru</option>
+            <option value="oldest">Urutkan: Terlama</option>
+            <option value="cust_asc">Nama Pelanggan (A-Z)</option>
+            <option value="device_asc">Seri Perangkat (A-Z)</option>
+            <option value="most_logs">Pengerjaan Terbanyak</option>
+          </select>
+
+          <div class="view-switcher">
+            <button id="btnViewExcel" class="view-btn active" onclick="setViewMode('excel')">📊 Format Tabel Excel</button>
+            <button id="btnViewCard" class="view-btn" onclick="setViewMode('card')">🗂️ Mode Kartu Tracer</button>
+          </div>
+
+          <button class="btn btn-light btn-sm" onclick="resetAllFilters()" title="Reset semua pencarian & filter">🔄 Reset Filter</button>
+        </div>
+        <div id="filterSummaryText" style="margin-top:0.65rem; font-size:0.8rem; color:#475569; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+        </div>
+      </section>
+
+      <!-- Kontainer Utama Data (Excel View / Card View) -->
+      <section id="dataContainer"></section>
+
+      <!-- Navigasi Halaman -->
+      <div class="pagination-bar" id="paginationBar">
+        <div id="pageInfoText" style="font-size:0.84rem; font-weight:600; color:#475569;"></div>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-light btn-sm" id="btnPrevPage" onclick="changePage(-1)">⬅ Sebelumnya</button>
+          <button class="btn btn-light btn-sm" id="btnNextPage" onclick="changePage(1)">Berikutnya ➡</button>
+          <select id="pageSizeSelect" class="filter-select" style="padding:0.25rem 0.5rem; font-size:0.8rem;" onchange="changePageSize()">
+            <option value="25">25 per halaman</option>
+            <option value="50" selected>50 per halaman</option>
+            <option value="100">100 per halaman</option>
+            <option value="500">Tampilkan Semua</option>
+          </select>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- MODAL LOGIN ADMIN (Untuk membuka fitur Edit, Tambah Progres, Unit Baru, Export/Import) -->
+  <div class="modal-backdrop" id="adminUnlockModal">
+    <div class="modal-content" style="max-width:420px;">
+      <div class="modal-header">
+        <h2>🔐 Masukkan Password Admin</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('adminUnlockModal')">✕</button>
+      </div>
+      <form onsubmit="handleAdminUnlock(event)">
+        <div class="modal-body">
+          <p style="font-size:0.84rem; color:#475569; margin-bottom:0.85rem;">
+            Fitur <b>Edit Kartu (Klik 2x)</b>, <b>+ Tambah Progres Teknisi</b>, <b>+ Unit Servis Baru</b>, serta <b>Export/Import CSV</b> hanya dapat digunakan di halaman Admin.
+          </p>
+          <div id="adminUnlockError" class="login-error">Password Admin salah!</div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label>Password Admin *</label>
+            <input type="password" id="adminUnlockInput" required placeholder="Masukkan password admin..." />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-light" onclick="closeModal('adminUnlockModal')">Batal</button>
+          <button type="submit" class="btn btn-primary">🔓 Aktifkan Mode Admin</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL UBAH PASSWORD -->
+  <div class="modal-backdrop" id="passwordModal">
+    <div class="modal-content" style="max-width:440px;">
+      <div class="modal-header">
+        <h2>🔑 Pengaturan Password Sistem</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('passwordModal')">✕</button>
+      </div>
+      <form onsubmit="saveNewPasswords(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Password Halaman Awal (Mode Lihat / Karyawan) *</label>
+            <input type="text" id="settingViewerPass" required />
+            <small style="font-size:0.74rem; color:#64748b;">Digunakan untuk membuka halaman awal namun hanya bisa melihat & mencari data.</small>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label>Password Halaman Admin (Full Akses Edit) *</label>
+            <input type="text" id="settingAdminPass" required />
+            <small style="font-size:0.74rem; color:#64748b;">Digunakan untuk mengedit kartu (klik 2x), menambah progres teknisi, unit baru, dan export/import CSV.</small>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-light" onclick="closeModal('passwordModal')">Batal</button>
+          <button type="submit" class="btn btn-primary">💾 Simpan Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 1: Tambah / Edit Unit Servis -->
+  <div class="modal-backdrop" id="unitModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="unitModalTitle">+ Tambah Unit Servis Baru</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('unitModal')">✕</button>
+      </div>
+      <form onsubmit="saveUnitForm(event)">
+        <div class="modal-body">
+          <input type="hidden" id="formUnitId" />
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nama Pemilik / Pelanggan *</label>
+              <input type="text" id="formNamaPelanggan" required placeholder="Contoh: Pak Rahmat / Ibu Nur / CC" />
+            </div>
+            <div class="form-group">
+              <label>Warna / Ciri Fisik Unit *</label>
+              <input type="text" id="formWarnaUnit" required placeholder="Contoh: Hitam / Silver / Biru Tua" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Seri Laptop / PC / Printer *</label>
+              <input type="text" id="formSeriPerangkat" required placeholder="Contoh: Laptop Asus X441M / Epson L3210" />
+            </div>
+            <div class="form-group">
+              <label>Kategori Perangkat</label>
+              <select id="formKategori">
+                <option value="Laptop / Notebook">Laptop / Notebook</option>
+                <option value="PC / Komputer">PC / Komputer</option>
+                <option value="Printer">Printer</option>
+                <option value="MacBook">MacBook</option>
+                <option value="Storage / Aksesoris">Storage / Aksesoris</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Tanggal Masuk</label>
+              <input type="date" id="formTglMasuk" required />
+            </div>
+            <div class="form-group">
+              <label>Status Saat Ini</label>
+              <select id="formStatus">
+                <option value="Dalam Pengerjaan">Dalam Pengerjaan</option>
+                <option value="Selesai (Siap Diambil)">Selesai (Siap Diambil)</option>
+                <option value="Sudah Diambil">Sudah Diambil</option>
+                <option value="Cancel (Sudah Diambil)">Cancel (Sudah Diambil)</option>
+                <option value="Cancel">Cancel</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Keluhan Awal Pelanggan *</label>
+            <textarea id="formKeluhan" rows="2" required placeholder="Contoh: Tidak tampil, ganti keyboard, install ulang, cepat panas..."></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Link Foto Facebook (Opsional)</label>
+            <input type="url" id="formLinkFb" placeholder="https://www.facebook.com/share/p/..." />
+          </div>
+
+          <div id="firstLogSection" style="background:#f8fafc; padding:0.85rem; border-radius:8px; border:1px solid #cbd5e1; margin-top:0.5rem;">
+            <div style="font-size:0.82rem; font-weight:700; margin-bottom:0.5rem; color:#1e293b;">🛠️ Tindakan / Cek Pertama Teknisi (Opsional)</div>
+            <div class="form-row">
+              <div class="form-group" style="margin-bottom:0.5rem;">
+                <label>Nama Teknisi</label>
+                <select id="formFirstTech">
+                  <option value="Arif">Arif (Merah)</option>
+                  <option value="Ardin">Ardin (Biru Muda)</option>
+                  <option value="Tia">Tia (Pink/Ungu)</option>
+                  <option value="Fazrun">Fazrun (Biru Tua)</option>
+                  <option value="Vivi">Vivi (Cream)</option>
+                  <option value="Vattar">Vattar (Kuning)</option>
+                  <option value="Ihwal">Ihwal (Hijau)</option>
+                  <option value="Hibrian">Hibrian (Oranye)</option>
+                  <option value="Zam Zam">Zam Zam</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0.5rem;">
+                <label>Tanggal Pengerjaan</label>
+                <input type="date" id="formFirstDate" />
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Catatan Pengerjaan / QC Awal</label>
+              <textarea id="formFirstNote" rows="2" placeholder="Contoh: QC semua aman kecuali baterai tidak mengisi & kesehatan SSD 100%"></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-light" onclick="closeModal('unitModal')">Batal</button>
+          <button type="submit" class="btn btn-primary">💾 Simpan Data Unit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Tambah Aktivitas / Log Teknisi (Update Progres) -->
+  <div class="modal-backdrop" id="logModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="logModalTitle">+ Tambah Progres Harian Teknisi</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('logModal')">✕</button>
+      </div>
+      <form onsubmit="saveLogForm(event)">
+        <div class="modal-body">
+          <input type="hidden" id="logUnitId" />
+          <input type="hidden" id="logEditIndex" value="-1" />
+          <div id="logUnitSummary" style="background:#eff6ff; padding:0.7rem 0.9rem; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border:1px solid #bfdbfe;"></div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Pilih Teknisi *</label>
+              <select id="logTechSelect" required onchange="handleTechSelectChange()">
+                <option value="Arif">🔴 Arif (Merah)</option>
+                <option value="Ardin">🔵 Ardin (Biru Muda/Langit)</option>
+                <option value="Tia">🟣 Tia (Pink/Ungu)</option>
+                <option value="Fazrun">🔷 Fazrun (Biru Tua)</option>
+                <option value="Vivi">🍦 Vivi (Cream)</option>
+                <option value="Vattar">🟡 Vattar (Kuning)</option>
+                <option value="Ihwal">🟢 Ihwal (Hijau)</option>
+                <option value="Hibrian">🟠 Hibrian (Oranye)</option>
+                <option value="Zam Zam">🩵 Zam Zam</option>
+                <option value="CUSTOM">-- Ketik Nama / Gabungan Teknisi --</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Tanggal Pengerjaan *</label>
+              <input type="date" id="logDateInput" required />
+            </div>
+          </div>
+
+          <div class="form-group" id="customTechGroup" style="display:none;">
+            <label>Nama Teknisi (Bisa gabungan misal: Arif & Ardin)</label>
+            <input type="text" id="logCustomTechInput" placeholder="Contoh: Arif & Vattar" />
+          </div>
+
+          <div class="form-group">
+            <label>Catatan Aktivitas / Tindakan Teknisi *</label>
+            <textarea id="logNoteInput" rows="3" required placeholder="Contoh: Bongkar pasang SSD 256GB & install Win 10 GPT, QC aman semua, sudah diambil CASH 450rb"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Update Status Unit Servis</label>
+            <select id="logStatusSelect">
+              <option value="AUTO">Otomatis deteksi dari catatan</option>
+              <option value="Dalam Pengerjaan">⏳ Dalam Pengerjaan</option>
+              <option value="Selesai (Siap Diambil)">✅ Selesai (Siap Diambil)</option>
+              <option value="Sudah Diambil">📦 Sudah Diambil</option>
+              <option value="Cancel (Sudah Diambil)">❌ Cancel (Sudah Diambil)</option>
+              <option value="Cancel">❌ Cancel</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer" style="justify-content: space-between;">
+          <div>
+            <button type="button" id="btnDeleteLogStep" class="btn btn-light" style="color:#dc2626; border-color:#fca5a5; display:none;" onclick="deleteCurrentLogStep()">🗑️ Hapus Catatan Ini</button>
+          </div>
+          <div style="display:flex; gap:0.6rem;">
+            <button type="button" class="btn btn-light" onclick="closeModal('logModal')">Batal</button>
+            <button type="submit" class="btn btn-primary">💾 Simpan Progres Teknisi</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL KELOLA TEKNISI & ANAK MAGANG -->
+  <div class="modal-backdrop" id="techManagerModal">
+    <div class="modal-content" style="max-width:680px;">
+      <div class="modal-header">
+        <h2>👨‍🔧 Kelola Daftar Teknisi & Anak Magang</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('techManagerModal')">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- Form Tambah / Edit Teknisi -->
+        <form id="techManagerForm" onsubmit="saveTechManagerForm(event)" style="background:#f8fafc; padding:1rem; border-radius:10px; border:1px solid #cbd5e1; margin-bottom:1.15rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+            <div id="techFormTitle" style="font-size:0.9rem; font-weight:800; color:#1e293b;">➕ Tambah Teknisi / Anak Magang Baru</div>
+            <button type="button" id="btnCancelTechEdit" class="btn btn-light btn-sm" style="display:none; font-size:0.74rem;" onclick="resetTechManagerForm()">Batal Edit</button>
+          </div>
+          <input type="hidden" id="techEditIndex" value="-1" />
+
+          <div class="form-row">
+            <div class="form-group" style="margin-bottom:0.65rem;">
+              <label>Nama Panggilan Teknisi *</label>
+              <input type="text" id="techFormName" required placeholder="Contoh: Rizky / Budi / Eka" oninput="updateTechPreviewPill()" />
+            </div>
+            <div class="form-group" style="margin-bottom:0.65rem;">
+              <label>Status / Kategori</label>
+              <select id="techFormRole" onchange="updateTechPreviewPill()">
+                <option value="Tetap">👨‍🔧 Teknisi Tetap</option>
+                <option value="Magang">🎓 Anak Magang / PKL</option>
+                <option value="Baru">🆕 Karyawan Baru / Training</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row" style="align-items:end;">
+            <div class="form-group" style="margin-bottom:0.65rem;">
+              <label>Pilih Warna Identitas (Kartu & Filter) *</label>
+              <select id="techFormColorPreset" onchange="updateTechPreviewPill()"></select>
+            </div>
+            <div class="form-group" style="margin-bottom:0.65rem;">
+              <label>Preview Tampilan Filter:</label>
+              <div id="techPreviewWrap" style="min-height:38px; display:flex; align-items:center;"></div>
+            </div>
+          </div>
+
+          <div id="techRenameLogsWrap" style="display:none; margin-bottom:0.65rem; padding:0.5rem 0.75rem; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; font-size:0.8rem; color:#1e3a8a;">
+            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin:0; font-weight:600;">
+              <input type="checkbox" id="techFormRenameLogs" checked style="width:auto;" />
+              <span>Otomatis perbarui nama teknisi ini pada semua riwayat servis lama</span>
+            </label>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:0.25rem;">
+            <button type="submit" id="btnSubmitTechForm" class="btn btn-primary btn-sm" style="padding:0.45rem 1rem; font-size:0.82rem;">
+              💾 Tambah ke Daftar Teknisi
+            </button>
+          </div>
+        </form>
+
+        <!-- Daftar Teknisi Saat Ini -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <div style="font-size:0.85rem; font-weight:700; color:#334155;">📋 Daftar Teknisi Terdaftar (<span id="techTotalCount">0</span> Orang)</div>
+          <button type="button" class="btn btn-light btn-sm" style="font-size:0.72rem; color:#64748b;" onclick="resetDefaultTechList()" title="Kembalikan daftar teknisi awal">🔄 Reset Default</button>
+        </div>
+
+        <div id="techManagerListContainer" class="tech-manager-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="closeModal('techManagerModal')">Selesai & Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL KONFIRMASI IMPORT FILE CSV / JSON BARU -->
+  <div class="modal-backdrop" id="importConfirmModal">
+    <div class="modal-content" style="max-width:540px;">
+      <div class="modal-header">
+        <h2>📤 Import File Data Baru (.CSV / .JSON)</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('importConfirmModal')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="importSummaryBox" style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:0.9rem 1rem; margin-bottom:1rem; font-size:0.86rem; color:#14532d;"></div>
+        <div style="font-size:0.84rem; font-weight:700; color:#334155; margin-bottom:0.4rem;">Preview Data dari File Baru:</div>
+        <div id="importPreviewList" style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:0.65rem 0.85rem; max-height:180px; overflow-y:auto; font-size:0.8rem; margin-bottom:1rem;"></div>
+        <div style="font-size:0.82rem; color:#475569;">Silakan pilih cara memasukkan file baru ini:</div>
+      </div>
+      <div class="modal-footer" style="flex-wrap:wrap; justify-content:space-between; gap:0.5rem;">
+        <button type="button" class="btn btn-light" onclick="closeModal('importConfirmModal')">Batal</button>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button type="button" class="btn btn-success" onclick="confirmImportAction('append')" title="Tambahkan data dari file baru ke bawah data yang sudah ada">
+            ➕ Gabungkan ke Data Lama
+          </button>
+          <button type="button" class="btn btn-primary" onclick="confirmImportAction('replace')" title="Ganti seluruh data saat ini dengan isi file baru">
+            🔄 Ganti Semua dengan File Baru
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: Panduan Online GitHub & Python -->
+  <div class="modal-backdrop" id="githubModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🌐 Cara Onlinekan di GitHub Pages & Pakai Python</h2>
+        <button class="btn btn-light btn-sm" onclick="closeModal('githubModal')">✕</button>
+      </div>
+      <div class="modal-body" style="font-size:0.88rem; line-height:1.6;">
+        <h3 style="font-size:0.95rem; margin-bottom:0.4rem; color:#1e40af;">1. Cara Onlinekan Gratis di GitHub Pages</h3>
+        <ol style="padding-left:1.25rem; margin-bottom:1rem;">
+          <li>Buka <a href="https://github.com/new" target="_blank">github.com/new</a> lalu buat repository baru (misal: <code>tracer-servis-toko</code>).</li>
+          <li>Upload file yang ada di folder ini: <code>index.html</code>, <code>style.css</code>, <code>app.js</code>, <code>data.js</code>, <code>app.py</code>, dan <code>parse_data.py</code>.</li>
+          <li>Buka menu <b>Settings ➔ Pages</b> di repository GitHub Anda, lalu pada bagian <b>Branch</b> pilih <code>main</code> dan klik <b>Save</b>.</li>
+          <li>Dalam 1 menit, aplikasi langsung online di <code>https://username-anda.github.io/tracer-servis-toko/</code> dan bisa dibuka dari HP/komputer mana saja!</li>
+        </ol>
+
+        <h3 style="font-size:0.95rem; margin-bottom:0.4rem; color:#1e40af;">2. Cara Menjalankan dengan Python di Komputer Toko</h3>
+        <p style="margin-bottom:0.5rem;">Jalankan perintah berikut di terminal/CMD pada folder ini:</p>
+        <pre style="background:#0f172a; color:#f8fafc; padding:0.75rem; border-radius:8px; font-size:0.8rem; margin-bottom:0.75rem; overflow-x:auto;">python app.py</pre>
+        <p>Saat dijalankan dengan <code>python app.py</code>, setiap kali teknisi menambah unit atau mengupdate progres di browser, Python otomatis menyimpan perubahan langsung ke file <code>data_service.json</code>, <code>data.js</code>, dan <code>raw_data.csv</code>!</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="closeModal('githubModal')">Mengerti</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="data.js?v=20261020_3"></script>
+  <script src="app.js?v=20261020_3"></script>
+</body>
+</html>
