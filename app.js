@@ -21,6 +21,7 @@ const STORAGE_KEY = "TOKO_KOMPUTER_SERVICE_DATA_V1";
 // Koneksi backend Rumahweb. Tidak ada password/token rahasia di source GitHub.
 const API_BASE_URL = "https://cakrawala.asia/aktivitas-api/";
 let apiToken = null; // Token hanya disimpan di memori halaman
+let apiRole = null; // operator = baca/tulis, viewer = baca saja
 let apiRevision = null;
 let apiSyncBlocked = false;
 let apiLocalChanges = false;
@@ -30,6 +31,77 @@ let apiSaveSequence = 0;
 let apiSaveQueue = Promise.resolve();
 let apiConnectInProgress = false;
 const PRE_SYNC_BACKUP_KEY = "TOKO_KOMPUTER_SERVICE_BACKUP_BEFORE_SYNC_";
+// Rumahweb menjadi sumber data setelah migrasi awal selesai (275 unit).
+// Hanya perubahan yang belum terkirim yang tidak boleh ditimpa oleh data server.
+const API_PENDING_KEY = "AKTIVITAS_API_UNSENT_LOCAL_V1";
+const API_BASELINE_KEY = "AKTIVITAS_API_BASELINE_V1";
+const API_POLL_INTERVAL_MS = 15000;
+let apiWarningShown = false;
+let apiAuthPromptDismissed = false;
+
+function hasUnsentLocalChanges() {
+  try { return localStorage.getItem(API_PENDING_KEY) === "1"; } catch (_) { return true; }
+}
+function setUnsentLocalChanges(value) {
+  try {
+    if (value) localStorage.setItem(API_PENDING_KEY, "1");
+    else localStorage.removeItem(API_PENDING_KEY);
+  } catch (_) { /* Jangan anggap data tersimpan server ketika storage browser penuh. */ }
+}
+function rememberServerState(data) {
+  try {
+    localStorage.setItem(API_BASELINE_KEY, JSON.stringify({
+      revision: data.revision,
+      records: data.records,
+      techList: data.techList
+    }));
+  } catch (_) { /* Cadangan lokal lain tetap ada. */ }
+}
+function readServerBaseline() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(API_BASELINE_KEY) || "null");
+    return saved && typeof saved.revision === "string" ? saved : null;
+  } catch (_) { return null; }
+}
+function warnSyncOnce(message) {
+  updateSyncIndicator("⚠️ " + message);
+  if (!apiWarningShown) {
+    apiWarningShown = true;
+    alert(message + "\nPerubahan lokal tetap disimpan di browser. Jangan bersihkan data browser.");
+  }
+}
+
+// Sesi API sementara per-tab agar setelah refresh tidak perlu terus mengisi password.
+// Ini menyimpan token sementara, BUKAN password API atau FLASK_SECRET_KEY.
+const API_SESSION_KEY = "AKTIVITAS_RUMAHWEB_API_SESSION_V1";
+const API_SESSION_MAX_MS = 5 * 60 * 60 * 1000;
+
+function restoreApiSession() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(API_SESSION_KEY) || "null");
+    if (saved && typeof saved.token === "string" && Date.now() < saved.expiresAt) {
+      apiToken = saved.token;
+      apiRole = saved.role === "viewer" ? "viewer" : "operator"; // Sesi lama hanya operator
+      return;
+    }
+  } catch (e) {}
+  sessionStorage.removeItem(API_SESSION_KEY);
+}
+
+function clearApiSession() {
+  apiRole = null;
+  apiToken = null;
+  apiRevision = null;
+  try { sessionStorage.removeItem(API_SESSION_KEY); } catch (e) {}
+}
+
+// Perangkat apa pun yang sudah login ke website memeriksa perubahan dari Rumahweb.
+// Tanpa tombol sinkronisasi: login API hanya dibutuhkan saat belum ada sesi server.
+function autoConnectAfterLogin() {
+  if (!isAuthenticated || apiConnectInProgress ||
+      (isPythonBackendAvailable && apiToken && !apiSyncBlocked)) return;
+  setTimeout(() => { void connectAktivitasApi(); }, 0);
+}
 
 const AUTH_SESSION_KEY = "TOKO_KOMPUTER_AUTH_SESSION_V1";
 const PASS_STORAGE_KEY = "TOKO_KOMPUTER_PASSWORDS_V1";
@@ -296,6 +368,14 @@ async function loginApi(password) {
     throw new Error("Login API gagal: token tidak tersedia");
   }
   apiToken = result.token;
+  apiRole = result.role === "viewer" ? "viewer" : "operator";
+  try {
+    sessionStorage.setItem(API_SESSION_KEY, JSON.stringify({
+      token: apiToken,
+      role: apiRole,
+      expiresAt: Date.now() + Math.min((Number(result.expires_in) || 21600) * 1000, API_SESSION_MAX_MS)
+    }));
+  } catch (e) { /* Memori halaman tetap dapat dipakai jika penyimpanan sesi diblokir. */ }
   return true;
 }
 
@@ -316,6 +396,7 @@ async function loadApiData(commitRevision = true) {
 }
 
 async function saveApiData(records, techList) {
+  if (apiRole !== "operator") throw new Error("Akun ini hanya dapat melihat data");
   if (!apiToken || !apiRevision) throw new Error("Login dan revisi server diperlukan");
   const result = await apiRequest("save", {
     method: "POST",
@@ -332,26 +413,26 @@ async function saveApiData(records, techList) {
   return result;
 }
 
+// Status sinkronisasi dan tombol manual sengaja tidak ditampilkan.
+// Koneksi otomatis dari laptop maupun ponsel ketika pengguna login.
 function ensureApiSyncButton() {
+  const btn = document.getElementById("btnConnectAktivitasApi");
+  if (btn) btn.remove();
   const label = document.getElementById("syncText");
-  if (!label || document.getElementById("btnConnectAktivitasApi")) return;
-  const button = document.createElement("button");
-  button.id = "btnConnectAktivitasApi";
-  button.type = "button";
-  button.textContent = "☁️ Hubungkan Rumahweb";
-  button.title = "Login API / perbarui data dari Rumahweb";
-  button.style.cssText = "display:inline-block;margin:5px 0;padding:6px 10px;border:1px solid #64748b;border-radius:8px;background:#f1f5f9;color:#0f172a;font-size:12px;font-weight:700;cursor:pointer;";
-  button.addEventListener("click", connectAktivitasApi);
-  label.insertAdjacentElement("afterend", button);
+  if (!label) return;
+  const parent = label.parentElement;
+  // Bilah status pada HTML berisi label sinkronisasi saja. Jangan sembunyikan
+  // baris besar yang mungkin memuat tombol tambah/edit/hapus jika HTML berubah.
+  if (parent && parent.querySelectorAll("button, a, input, select, textarea").length === 0
+      && parent.children.length <= 3) {
+    parent.style.display = "none";
+  } else {
+    label.style.display = "none";
+  }
 }
 
 function updateApiSyncButton() {
-  const button = document.getElementById("btnConnectAktivitasApi");
-  if (!button) return;
-  button.disabled = apiConnectInProgress;
-  button.textContent = apiConnectInProgress
-    ? "⏳ Menghubungkan..."
-    : (apiToken && !apiSyncBlocked ? "🔄 Perbarui dari Rumahweb" : "☁️ Hubungkan Rumahweb");
+  // Tanpa tombol manual pada halaman: sinkronisasi tetap berlangsung.
 }
 
 function backupBrowserBeforeSwitch() {
@@ -381,6 +462,8 @@ function applyServerSnapshot(data) {
   }
   loadTechList();
   apiLocalChanges = false;
+  setUnsentLocalChanges(false);
+  rememberServerState(data);
   isPythonBackendAvailable = true;
   inlineEditState = { unitId: null, logIdx: null };
   currentPage = 1;
@@ -404,111 +487,140 @@ function apiDataMatchesCurrent(data) {
   return sameRecords && sameTechs;
 }
 
+// Setelah data pertama kali diunggah, server adalah sumber data utama.
+// Tidak ada pilihan SERVER/LOKAL untuk perubahan rutin.
 async function connectAktivitasApi() {
-  if (apiConnectInProgress) return;
-  if (!isAuthenticated) {
-    alert("Login ke website terlebih dahulu.");
-    return;
-  }
+  if (apiConnectInProgress || !isAuthenticated) return;
   apiConnectInProgress = true;
-  updateApiSyncButton();
   try {
     await apiSaveQueue;
-    if (!apiToken || apiSyncBlocked) {
-      const password = window.prompt("Masukkan password KHUSUS API Rumahweb (bukan password login website). Password tidak disimpan di GitHub atau browser.");
-      if (password === null) return;
-      if (!password) throw new Error("Password API kosong");
-      await loginApi(password);
-    }
-    const remote = await loadApiData();
-    if (apiDataMatchesCurrent(remote)) {
-      apiSyncBlocked = false;
-      apiLocalChanges = false;
-      isPythonBackendAvailable = true;
-      updateSyncIndicator("✅ Rumahweb terhubung; data cocok (" + serviceData.length + " unit)");
-      return;
-    }
-
-    const choice = window.prompt(
-      "DATA LAPTOP DAN RUMAHWEB BERBEDA.\n\n" +
-      "Laptop/browser: " + serviceData.length + " unit.\n" +
-      "Rumahweb: " + remote.records.length + " unit.\n\n" +
-      "Ketik SERVER = gunakan data Rumahweb di laptop ini.\n" +
-      "Ketik LOKAL = unggah data laptop INI ke Rumahweb (khusus laptop utama).\n" +
-      "Ketik BATAL = jangan mengubah data mana pun.\n\n" +
-      "JANGAN pilih LOKAL pada laptop lain yang datanya tertinggal.",
-      "BATAL"
-    );
-    const mode = (choice || "BATAL").trim().toUpperCase();
-    if (mode === "SERVER") {
-      if (!backupBrowserBeforeSwitch()) return;
-      if (!window.confirm("Gunakan data RUMAHWEB dan ganti tampilan/data lokal? Cadangan lokal tersimpan di browser ini.")) return;
-      applyServerSnapshot(remote);
-      apiSyncBlocked = false;
-      return;
-    }
-    if (mode === "LOKAL") {
-      if (!serviceData.length) {
-        alert("Data laptop kosong. Upload kosong dibatalkan agar data Rumahweb tidak terhapus.");
+    if (!apiToken) {
+      if (apiAuthPromptDismissed) return;
+      // Login API sekali per sesi/perangkat; password tidak disimpan di source GitHub.
+      const promptLabel = isAdminMode
+        ? "Password API admin Rumahweb (sekali tiap sesi), agar perubahan otomatis tersimpan di semua perangkat:"
+        : "Password API baca-saja Rumahweb (sekali tiap sesi), agar data selalu otomatis diperbarui:";
+      const password = window.prompt(promptLabel);
+      if (!password) {
+        apiAuthPromptDismissed = true;
+        warnSyncOnce("Perangkat ini belum terhubung ke Rumahweb; perubahan dari perangkat lain belum dapat diterima.");
         return;
       }
-      const ok = window.confirm(
-        "PERHATIAN: Ini akan MENGGANTI data Rumahweb (" + remote.records.length +
-        " unit) dengan data LAPTOP (" + serviceData.length +
-        " unit). Hanya lanjut jika ini laptop SUMBER UTAMA dan Anda sudah punya cadangannya."
-      );
-      if (!ok) return;
-      await saveApiData(JSON.parse(JSON.stringify(serviceData)), techListForApi());
-      apiSyncBlocked = false;
-      apiLocalChanges = false;
-      isPythonBackendAvailable = true;
-      updateSyncIndicator("✅ Data laptop utama berhasil dikirim ke Rumahweb (" + serviceData.length + " unit)");
+      await loginApi(password);
+      apiAuthPromptDismissed = false;
+    }
+    if (isAdminMode && apiRole !== "operator") {
+      clearApiSession();
+      throw new Error("Mode Admin membutuhkan password API operator, bukan password baca saja");
+    }
+    const initialSeq = apiSaveSequence;
+    const remote = await loadApiData();
+    if (initialSeq !== apiSaveSequence) {
+      // Ada perubahan selagi GET berjalan: jangan langsung mengganti data.
+      apiSyncBlocked = true;
+      warnSyncOnce("Ada perubahan saat koneksi dibuat. Jangan lanjut mengedit; muat ulang setelah membackup data.");
       return;
     }
-    updateSyncIndicator("⚠️ Sinkronisasi dibatalkan; data laptop tidak diubah");
-  } catch (error) {
-    apiSyncBlocked = true;
-    isPythonBackendAvailable = false;
-    updateSyncIndicator("⚠️ Rumahweb belum tersambung: " + error.message);
-    alert("Koneksi API gagal: " + error.message + "\nData laptop tetap tersimpan di browser; belum tersinkron ke Rumahweb.");
-  } finally {
-    if (!isPythonBackendAvailable) {
-      apiToken = null;
-      apiRevision = null;
+    if (hasUnsentLocalChanges() || apiLocalChanges) {
+      // Jika ada edit offline, jangan mengganti browser dengan salinan dari server.
+      // Viewer tidak boleh mengunggah perubahan lokal dari browser lain.
+      if (apiRole !== "operator") {
+        apiSyncBlocked = true;
+        warnSyncOnce("Perangkat ini punya perubahan lokal belum terkirim. Login sebagai admin pada perangkat tersebut untuk menyelesaikannya, jangan timpa datanya.");
+        return;
+      }
+      const baseline = readServerBaseline();
+      if (apiDataMatchesCurrent(remote)) {
+        apiLocalChanges = false;
+        setUnsentLocalChanges(false);
+        rememberServerState(remote);
+      } else if (baseline && baseline.revision === remote.revision) {
+        // Tak ada perubahan di server sejak edit lokal: aman kirim otomatis.
+        const records = JSON.parse(JSON.stringify(serviceData));
+        const techList = JSON.parse(JSON.stringify(techListForApi()));
+        await saveApiData(records, techList);
+        rememberServerState({ records, techList, revision: apiRevision });
+        apiLocalChanges = false;
+        setUnsentLocalChanges(false);
+      } else {
+        apiSyncBlocked = true;
+        warnSyncOnce("Data di perangkat ini dan Rumahweb sama-sama berubah. Sinkronisasi dihentikan agar tidak ada data yang tertimpa. Buat backup sebelum menyelesaikan konflik.");
+        return;
+      }
+    } else if (!apiDataMatchesCurrent(remote)) {
+      // Data berbeda karena perubahan perangkat lain -> tarik otomatis dari server.
+      if (!backupBrowserBeforeSwitch()) return;
+      applyServerSnapshot(remote);
+    } else {
+      rememberServerState(remote);
     }
+    isPythonBackendAvailable = true;
+    apiSyncBlocked = false;
+    apiWarningShown = false;
+    updateSyncIndicator();
+  } catch (error) {
+    isPythonBackendAvailable = false;
+    if (error.httpStatus === 401) {
+      clearApiSession();
+      warnSyncOnce("Sesi API telah berakhir. Masukkan password API kembali saat website dibuka untuk melanjutkan pembaruan otomatis.");
+    } else {
+      // Gangguan internet sementara: jangan hapus token agar koneksi dapat dicoba lagi.
+      warnSyncOnce("Rumahweb belum dapat dihubungi: " + error.message);
+    }
+  } finally {
     apiConnectInProgress = false;
-    updateApiSyncButton();
   }
 }
 
-// Baca pembaruan perangkat lain setiap 60 detik; jangan pernah menimpa perubahan lokal belum tersimpan.
+// Pembaruan lintas perangkat berjalan otomatis setiap 15 detik selama halaman terbuka.
 async function pollAktivitasApi() {
-  if (apiPolling || apiConnectInProgress || apiSaving || apiLocalChanges || apiSyncBlocked || !apiToken || !isPythonBackendAvailable) return;
+  if (!isAuthenticated || apiPolling || apiConnectInProgress || apiSaving || apiSyncBlocked) return;
+  if (!apiToken || !isPythonBackendAvailable) {
+    // Coba sambung ulang ketika jaringan pulih; tidak meminta pilihan sumber data.
+    if (apiToken) void connectAktivitasApi();
+    return;
+  }
+  if (apiLocalChanges || hasUnsentLocalChanges()) {
+    if (apiRole === "operator") void flushPendingApiData();
+    return;
+  }
   apiPolling = true;
   try {
+    const seq = apiSaveSequence;
     const remote = await loadApiData(false);
-    // Jangan perbarui revisi ataupun ganti data bila ada edit selama permintaan berjalan.
-    if (apiSaving || apiLocalChanges || apiSyncBlocked || !apiToken) return;
+    // Jangan timpa perubahan lokal yang terjadi saat request berjalan.
+    if (seq !== apiSaveSequence || apiSaving || apiLocalChanges || hasUnsentLocalChanges()) return;
     apiRevision = remote.revision;
     if (!apiDataMatchesCurrent(remote)) {
-      if (!backupBrowserBeforeSwitch()) {
-        apiSyncBlocked = true;
-        updateSyncIndicator("⚠️ Data server berubah; cadangan browser gagal; hentikan sinkronisasi");
-        return;
-      }
+      if (!backupBrowserBeforeSwitch()) return;
       applyServerSnapshot(remote);
-      updateSyncIndicator("🔄 Perubahan dari perangkat lain dimuat (" + serviceData.length + " unit)");
+    } else {
+      rememberServerState(remote);
     }
+    apiWarningShown = false;
   } catch (error) {
-    apiSyncBlocked = true;
     isPythonBackendAvailable = false;
-    updateSyncIndicator("⚠️ Koneksi putus; data lokal tidak ditimpa. Hubungkan ulang.");
+    if (error.httpStatus === 401) {
+      clearApiSession();
+      warnSyncOnce("Sesi API telah berakhir. Login API lagi untuk melanjutkan sinkronisasi.");
+    } else {
+      warnSyncOnce("Koneksi Rumahweb terputus: " + error.message);
+    }
   } finally {
     apiPolling = false;
-    updateApiSyncButton();
   }
 }
-setInterval(pollAktivitasApi, 60000);
+setInterval(pollAktivitasApi, API_POLL_INTERVAL_MS);
+window.addEventListener("focus", () => {
+  if (!apiToken && isAuthenticated) autoConnectAfterLogin();
+  else void pollAktivitasApi();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    if (!apiToken && isAuthenticated) autoConnectAfterLogin();
+    else void pollAktivitasApi();
+  }
+});
 
 function checkSessionAuth() {
   try {
@@ -545,6 +657,7 @@ function handleInitialLogin(e) {
     saveSessionAuth();
     updateAuthUI();
     renderData();
+    autoConnectAfterLogin();
   } else if (input === viewerPass) {
     isAuthenticated = true;
     isAdminMode = false;
@@ -553,14 +666,15 @@ function handleInitialLogin(e) {
     saveSessionAuth();
     updateAuthUI();
     renderData();
+    autoConnectAfterLogin();
   } else {
     errBox.style.display = "block";
   }
 }
 
 function logoutSystem() {
-  apiToken = null;
-  apiRevision = null;
+  apiAuthPromptDismissed = false;
+  clearApiSession();
   isPythonBackendAvailable = false;
   apiSyncBlocked = false;
   isAuthenticated = false;
@@ -589,6 +703,7 @@ function handleAdminUnlock(e) {
     renderTechLegend();
     renderFilterSummary();
     renderData();
+    autoConnectAfterLogin();
   } else {
     document.getElementById("adminUnlockError").style.display = "block";
   }
@@ -662,6 +777,8 @@ function updateAuthUI() {
 // ==========================================
 async function initApp() {
   checkSessionAuth();
+  restoreApiSession();
+  apiLocalChanges = hasUnsentLocalChanges();
   loadTechList();
   // Tidak otomatis mengunduh/mengunggah data. Browser laptop utama adalah sumber awal.
   // Data baru dibandingan dengan Rumahweb setelah pengguna klik Hubungkan.
@@ -683,6 +800,7 @@ async function initApp() {
   updateSyncIndicator();
   renderTechLegend();
   applyFilters();
+  autoConnectAfterLogin();
 }
 
 function updateSyncIndicator(msg) {
@@ -702,47 +820,67 @@ function updateSyncIndicator(msg) {
   updateApiSyncButton();
 }
 
-// Penyimpanan lokal tetap berjalan, tetapi gagal sinkron TIDAK dianggap sukses server.
-async function persistData() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serviceData));
-    localStorage.setItem(TECH_STORAGE_KEY, JSON.stringify(techListForApi()));
-  } catch (error) {
-    alert("PENYIMPANAN LOKAL GAGAL. Segera ekspor cadangan; jangan tutup halaman!");
-    updateSyncIndicator("❌ Data lokal gagal disimpan!");
-    return;
-  }
-  apiLocalChanges = true;
-  const sequence = ++apiSaveSequence;
+// Tambah/edit/hapus: kirim ke server tanpa tombol manual.
+// Jika offline, simpan perubahan lokal dengan penanda "belum terkirim" untuk dicoba lagi.
+async function flushPendingApiData() {
+  if (apiRole !== "operator") return apiSaveQueue;
+  if (apiSaving || apiConnectInProgress || apiSyncBlocked || !apiToken || !apiRevision || !isPythonBackendAvailable) return apiSaveQueue;
+  if (!hasUnsentLocalChanges() && !apiLocalChanges) return apiSaveQueue;
+  const sequence = apiSaveSequence;
   const snapshotRecords = JSON.parse(JSON.stringify(serviceData));
   const snapshotTechs = JSON.parse(JSON.stringify(techListForApi()));
-  updateSyncIndicator();
-  if (!apiToken || !apiRevision || apiSyncBlocked || !isPythonBackendAvailable) {
-    updateSyncIndicator("⚠️ Tersimpan di browser SAJA; klik Hubungkan Rumahweb untuk sinkronisasi");
-    return;
-  }
-  // Serialisasi simpan: nomor revisi diperbarui setiap respons, tidak paralel.
+  apiSaving = true;
   apiSaveQueue = apiSaveQueue.then(async () => {
-    if (apiSyncBlocked || !apiToken || !isPythonBackendAvailable) return;
-    apiSaving = true;
-    updateSyncIndicator();
     try {
       await saveApiData(snapshotRecords, snapshotTechs);
-      if (sequence === apiSaveSequence) apiLocalChanges = false;
+      rememberServerState({ records: snapshotRecords, techList: snapshotTechs, revision: apiRevision });
+      if (sequence === apiSaveSequence) {
+        apiLocalChanges = false;
+        setUnsentLocalChanges(false);
+      }
+      apiWarningShown = false;
       updateSyncIndicator();
     } catch (error) {
-      apiSyncBlocked = true;
-      isPythonBackendAvailable = false;
-      apiToken = null;
-      apiRevision = null;
-      updateSyncIndicator("❌ Belum tersinkron: " + error.message + " (perubahan masih di browser)");
-      alert("Penyimpanan Rumahweb gagal: " + error.message +
-        "\nPerubahan tetap ada di browser. Hubungkan ulang dan pilih data dengan hati-hati, jangan hapus cache.");
+      apiLocalChanges = true;
+      setUnsentLocalChanges(true);
+      if (error.httpStatus === 409) {
+        // Konflik dua admin mengedit bersamaan: jangan menimpa data server otomatis.
+        apiSyncBlocked = true;
+        warnSyncOnce("Konflik perubahan bersamaan dari dua perangkat. Data lokal belum dikirim; buat backup sebelum memutuskan versi mana yang dipakai.");
+      } else if (error.httpStatus === 401) {
+        isPythonBackendAvailable = false;
+        clearApiSession();
+        warnSyncOnce("Sesi API berakhir. Masukkan password API lagi setelah login untuk menyimpan perubahan tertunda.");
+      } else {
+        // Tidak memblokir permanen untuk masalah koneksi; polling berikutnya akan mencoba lagi.
+        warnSyncOnce("Gagal mengirim data ke Rumahweb: " + error.message);
+      }
     } finally {
       apiSaving = false;
     }
   });
   return apiSaveQueue;
+}
+
+async function persistData() {
+  // Tandai belum terkirim SEBELUM menulis isi data ke localStorage.
+  apiLocalChanges = true;
+  ++apiSaveSequence;
+  setUnsentLocalChanges(true);
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serviceData));
+    localStorage.setItem(TECH_STORAGE_KEY, JSON.stringify(techListForApi()));
+  } catch (error) {
+    warnSyncOnce("Penyimpanan lokal gagal. Segera ekspor data dan jangan tutup halaman!");
+    return;
+  }
+  updateSyncIndicator();
+  if (!apiToken || !isPythonBackendAvailable) {
+    // Akan dicoba pada saat reconnect; jangan mengaku sudah tersimpan server.
+    if (isAuthenticated && isAdminMode && apiToken) void connectAktivitasApi();
+    return;
+  }
+  return flushPendingApiData();
 }
 
 // Hitung jumlah unit per teknisi
@@ -2532,7 +2670,7 @@ function confirmImportAction(mode) {
 }
 
 window.addEventListener("beforeunload", (event) => {
-  if (apiLocalChanges && apiToken && (apiSaving || isPythonBackendAvailable)) {
+  if (apiLocalChanges || hasUnsentLocalChanges()) {
     event.preventDefault();
     event.returnValue = "";
   }
