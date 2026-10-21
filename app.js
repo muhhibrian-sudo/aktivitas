@@ -35,9 +35,9 @@ const PRE_SYNC_BACKUP_KEY = "TOKO_KOMPUTER_SERVICE_BACKUP_BEFORE_SYNC_";
 // Hanya perubahan yang belum terkirim yang tidak boleh ditimpa oleh data server.
 const API_PENDING_KEY = "AKTIVITAS_API_UNSENT_LOCAL_V1";
 const API_BASELINE_KEY = "AKTIVITAS_API_BASELINE_V1";
-const API_POLL_INTERVAL_MS = 15000;
+const API_POLL_INTERVAL_MS = 3000;
 let apiWarningShown = false;
-let apiAuthPromptDismissed = false;
+// Autentikasi Rumahweb memakai form login website yang sama: tanpa prompt kedua.
 
 function hasUnsentLocalChanges() {
   try { return localStorage.getItem(API_PENDING_KEY) === "1"; } catch (_) { return true; }
@@ -95,11 +95,10 @@ function clearApiSession() {
   try { sessionStorage.removeItem(API_SESSION_KEY); } catch (e) {}
 }
 
-// Perangkat apa pun yang sudah login ke website memeriksa perubahan dari Rumahweb.
-// Tanpa tombol sinkronisasi: login API hanya dibutuhkan saat belum ada sesi server.
+// Login normal website sudah menghasilkan token backend. Tak ada kotak password kedua.
 function autoConnectAfterLogin() {
-  if (!isAuthenticated || apiConnectInProgress ||
-      (isPythonBackendAvailable && apiToken && !apiSyncBlocked)) return;
+  if (!isAuthenticated || !apiToken || apiConnectInProgress ||
+      (isPythonBackendAvailable && !apiSyncBlocked)) return;
   setTimeout(() => { void connectAktivitasApi(); }, 0);
 }
 
@@ -254,21 +253,7 @@ function populateTechDropdowns() {
   }
 }
 
-// Ambil konfigurasi password (default: toko123 untuk lihat, admin123 untuk admin)
-function getPasswords() {
-  try {
-    const saved = localStorage.getItem(PASS_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.viewerPass && parsed.adminPass) return parsed;
-    }
-  } catch (e) {}
-  return {
-    viewerPass: "toko123",
-    adminPass: "admin123"
-  };
-}
-
+// Password admin/viewer tidak disimpan di GitHub maupun browser. Server memvalidasi login.
 function getTechClass(techName) {
   if (!techName) return { cell: "tech-other", badge: "badge-other" };
   const low = techName.toLowerCase();
@@ -357,8 +342,8 @@ async function apiRequest(action, options = {}) {
   return result;
 }
 
-async function loginApi(password) {
-  if (!password) throw new Error("Password API diperlukan");
+async function loginApi(password, expectedRole = null) {
+  if (!password) throw new Error("Password login diperlukan");
   const result = await apiRequest("login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -367,8 +352,12 @@ async function loginApi(password) {
   if (result.status !== "success" || typeof result.token !== "string" || !result.token) {
     throw new Error("Login API gagal: token tidak tersedia");
   }
+  const grantedRole = result.role === "viewer" ? "viewer" : "operator";
+  if (expectedRole && grantedRole !== expectedRole) {
+    throw new Error("Password bukan password Admin Rumahweb");
+  }
   apiToken = result.token;
-  apiRole = result.role === "viewer" ? "viewer" : "operator";
+  apiRole = grantedRole;
   try {
     sessionStorage.setItem(API_SESSION_KEY, JSON.stringify({
       token: apiToken,
@@ -495,19 +484,9 @@ async function connectAktivitasApi() {
   try {
     await apiSaveQueue;
     if (!apiToken) {
-      if (apiAuthPromptDismissed) return;
-      // Login API sekali per sesi/perangkat; password tidak disimpan di source GitHub.
-      const promptLabel = isAdminMode
-        ? "Password API admin Rumahweb (sekali tiap sesi), agar perubahan otomatis tersimpan di semua perangkat:"
-        : "Password API baca-saja Rumahweb (sekali tiap sesi), agar data selalu otomatis diperbarui:";
-      const password = window.prompt(promptLabel);
-      if (!password) {
-        apiAuthPromptDismissed = true;
-        warnSyncOnce("Perangkat ini belum terhubung ke Rumahweb; perubahan dari perangkat lain belum dapat diterima.");
-        return;
-      }
-      await loginApi(password);
-      apiAuthPromptDismissed = false;
+      // Jangan pernah meminta password tambahan; kembalikan ke halaman login biasa.
+      requireWebsiteLogin("Sesi Rumahweb belum tersedia. Silakan login kembali.");
+      return;
     }
     if (isAdminMode && apiRole !== "operator") {
       clearApiSession();
@@ -562,7 +541,7 @@ async function connectAktivitasApi() {
     isPythonBackendAvailable = false;
     if (error.httpStatus === 401) {
       clearApiSession();
-      warnSyncOnce("Sesi API telah berakhir. Masukkan password API kembali saat website dibuka untuk melanjutkan pembaruan otomatis.");
+      requireWebsiteLogin("Sesi telah berakhir. Login kembali lewat halaman website.");
     } else {
       // Gangguan internet sementara: jangan hapus token agar koneksi dapat dicoba lagi.
       warnSyncOnce("Rumahweb belum dapat dihubungi: " + error.message);
@@ -572,12 +551,13 @@ async function connectAktivitasApi() {
   }
 }
 
-// Pembaruan lintas perangkat berjalan otomatis setiap 15 detik selama halaman terbuka.
+// Pembaruan lintas perangkat diperiksa sekitar setiap 3 detik selama halaman aktif.
 async function pollAktivitasApi() {
   if (!isAuthenticated || apiPolling || apiConnectInProgress || apiSaving || apiSyncBlocked) return;
   if (!apiToken || !isPythonBackendAvailable) {
-    // Coba sambung ulang ketika jaringan pulih; tidak meminta pilihan sumber data.
+    // Coba sambung ulang setelah gangguan jaringan; autentikasi tetap dari form login website.
     if (apiToken) void connectAktivitasApi();
+    else requireWebsiteLogin("Sesi Rumahweb berakhir. Silakan login kembali.");
     return;
   }
   if (apiLocalChanges || hasUnsentLocalChanges()) {
@@ -602,7 +582,7 @@ async function pollAktivitasApi() {
     isPythonBackendAvailable = false;
     if (error.httpStatus === 401) {
       clearApiSession();
-      warnSyncOnce("Sesi API telah berakhir. Login API lagi untuk melanjutkan sinkronisasi.");
+      requireWebsiteLogin("Sesi Rumahweb berakhir. Silakan login website kembali.");
     } else {
       warnSyncOnce("Koneksi Rumahweb terputus: " + error.message);
     }
@@ -622,17 +602,32 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+function requireWebsiteLogin(message) {
+  clearApiSession();
+  isPythonBackendAvailable = false;
+  isAuthenticated = false;
+  isAdminMode = false;
+  try { sessionStorage.removeItem(AUTH_SESSION_KEY); } catch (_) {}
+  updateAuthUI();
+  const box = document.getElementById("loginErrorBox");
+  if (box && message) {
+    box.textContent = message;
+    box.style.display = "block";
+  }
+}
+
 function checkSessionAuth() {
+  // Sesi lama yang hanya ditandai login di browser TIDAK cukup untuk akses Rumahweb.
+  let adminPreferred = false;
   try {
-    const sess = sessionStorage.getItem(AUTH_SESSION_KEY);
-    if (sess) {
-      const parsed = JSON.parse(sess);
-      if (parsed.authenticated) {
-        isAuthenticated = true;
-        isAdminMode = Boolean(parsed.admin);
-      }
-    }
-  } catch (e) {}
+    const saved = JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || "null");
+    adminPreferred = saved && saved.authenticated && saved.admin === true;
+  } catch (_) {}
+  isAuthenticated = Boolean(apiToken && apiRole);
+  isAdminMode = isAuthenticated && apiRole === "operator" && adminPreferred;
+  if (!isAuthenticated) {
+    try { sessionStorage.removeItem(AUTH_SESSION_KEY); } catch (_) {}
+  }
   updateAuthUI();
 }
 
@@ -643,37 +638,35 @@ function saveSessionAuth() {
   );
 }
 
-function handleInitialLogin(e) {
+// SATU KALI LOGIN WEBSITE = login Rumahweb. Tanpa dialog password API tambahan.
+async function handleInitialLogin(e) {
   e.preventDefault();
-  const input = document.getElementById("initialPasswordInput").value.trim();
-  const { viewerPass, adminPass } = getPasswords();
+  const inputEl = document.getElementById("initialPasswordInput");
+  const password = inputEl.value.trim();
   const errBox = document.getElementById("loginErrorBox");
-
-  if (input === adminPass) {
+  const submitButton = e.target.querySelector('[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
+  errBox.style.display = "none";
+  try {
+    await loginApi(password);
     isAuthenticated = true;
-    isAdminMode = true;
-    errBox.style.display = "none";
-    document.getElementById("initialPasswordInput").value = "";
+    isAdminMode = apiRole === "operator";
+    apiWarningShown = false;
     saveSessionAuth();
     updateAuthUI();
     renderData();
     autoConnectAfterLogin();
-  } else if (input === viewerPass) {
-    isAuthenticated = true;
-    isAdminMode = false;
-    errBox.style.display = "none";
-    document.getElementById("initialPasswordInput").value = "";
-    saveSessionAuth();
-    updateAuthUI();
-    renderData();
-    autoConnectAfterLogin();
-  } else {
+  } catch (error) {
+    // Hindari kembali ke autentikasi lokal yang mudah dibypass.
+    errBox.textContent = "Login gagal: " + error.message;
     errBox.style.display = "block";
+  } finally {
+    inputEl.value = "";
+    if (submitButton) submitButton.disabled = false;
   }
 }
 
 function logoutSystem() {
-  apiAuthPromptDismissed = false;
   clearApiSession();
   isPythonBackendAvailable = false;
   apiSyncBlocked = false;
@@ -691,11 +684,16 @@ function openAdminUnlockModal() {
   setTimeout(() => document.getElementById("adminUnlockInput").focus(), 80);
 }
 
-function handleAdminUnlock(e) {
+async function handleAdminUnlock(e) {
   e.preventDefault();
-  const input = document.getElementById("adminUnlockInput").value.trim();
-  const { adminPass } = getPasswords();
-  if (input === adminPass) {
+  const el = document.getElementById("adminUnlockInput");
+  const password = el.value.trim();
+  const errBox = document.getElementById("adminUnlockError");
+  const btn = e.target.querySelector('[type="submit"]');
+  if (btn) btn.disabled = true;
+  try {
+    // Hanya password operator server yang dapat meningkatkan izin admin.
+    await loginApi(password, "operator");
     isAdminMode = true;
     saveSessionAuth();
     closeModal("adminUnlockModal");
@@ -703,9 +701,14 @@ function handleAdminUnlock(e) {
     renderTechLegend();
     renderFilterSummary();
     renderData();
-    autoConnectAfterLogin();
-  } else {
-    document.getElementById("adminUnlockError").style.display = "block";
+    // Gunakan ulang server-data yang sudah dimuat; tetap polling otomatis.
+    if (!isPythonBackendAvailable) autoConnectAfterLogin();
+  } catch (error) {
+    errBox.textContent = "Login Admin gagal: " + error.message;
+    errBox.style.display = "block";
+  } finally {
+    el.value = "";
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -719,22 +722,15 @@ function exitAdminMode() {
   renderData();
 }
 
+// Password dikelola di cPanel; mengubahnya di localStorage tidak mengubah server.
 function openPasswordModal() {
   if (!isAdminMode) return openAdminUnlockModal();
-  const { viewerPass, adminPass } = getPasswords();
-  document.getElementById("settingViewerPass").value = viewerPass;
-  document.getElementById("settingAdminPass").value = adminPass;
-  document.getElementById("passwordModal").classList.add("open");
+  alert("Password login website sekarang sama dengan password API Rumahweb. Untuk menggantinya, ubah AKTIVITAS_API_PASSWORD (Admin) atau AKTIVITAS_VIEWER_PASSWORD (Lihat Saja) melalui cPanel > Python > aktivitas-api > Environment variables, lalu restart Python.");
 }
 
 function saveNewPasswords(e) {
   e.preventDefault();
-  const viewerPass = document.getElementById("settingViewerPass").value.trim();
-  const adminPass = document.getElementById("settingAdminPass").value.trim();
-  if (!viewerPass || !adminPass) return;
-  localStorage.setItem(PASS_STORAGE_KEY, JSON.stringify({ viewerPass, adminPass }));
-  closeModal("passwordModal");
-  alert("Password berhasil diperbarui!");
+  alert("Password tidak diubah. Gunakan cPanel Rumahweb agar perubahan berlaku untuk semua perangkat.");
 }
 
 function updateAuthUI() {
@@ -776,8 +772,8 @@ function updateAuthUI() {
 // INISIALISASI DATA - browser tetap utuh sampai koneksi diizinkan pengguna
 // ==========================================
 async function initApp() {
-  checkSessionAuth();
   restoreApiSession();
+  checkSessionAuth();
   apiLocalChanges = hasUnsentLocalChanges();
   loadTechList();
   // Tidak otomatis mengunduh/mengunggah data. Browser laptop utama adalah sumber awal.
@@ -850,7 +846,7 @@ async function flushPendingApiData() {
       } else if (error.httpStatus === 401) {
         isPythonBackendAvailable = false;
         clearApiSession();
-        warnSyncOnce("Sesi API berakhir. Masukkan password API lagi setelah login untuk menyimpan perubahan tertunda.");
+        requireWebsiteLogin("Sesi Rumahweb berakhir. Login kembali untuk mengirim perubahan yang tertunda.");
       } else {
         // Tidak memblokir permanen untuk masalah koneksi; polling berikutnya akan mencoba lagi.
         warnSyncOnce("Gagal mengirim data ke Rumahweb: " + error.message);
