@@ -354,7 +354,7 @@ async function loginApi(password, expectedRole = null) {
   }
   const grantedRole = result.role === "viewer" ? "viewer" : "operator";
   if (expectedRole && grantedRole !== expectedRole) {
-    throw new Error("Password bukan password Admin Rumahweb");
+    throw new Error("Password Admin tidak cocok");
   }
   apiToken = result.token;
   apiRole = grantedRole;
@@ -638,7 +638,7 @@ function saveSessionAuth() {
   );
 }
 
-// SATU KALI LOGIN WEBSITE = login Rumahweb. Tanpa dialog password API tambahan.
+// Login bawaan website ditangani server Rumahweb. Tanpa dialog tambahan.
 async function handleInitialLogin(e) {
   e.preventDefault();
   const inputEl = document.getElementById("initialPasswordInput");
@@ -722,15 +722,54 @@ function exitAdminMode() {
   renderData();
 }
 
-// Password dikelola di cPanel; mengubahnya di localStorage tidak mengubah server.
+// Password pada menu Admin tersimpan sebagai HASH di Rumahweb, bukan localStorage.
 function openPasswordModal() {
-  if (!isAdminMode) return openAdminUnlockModal();
-  alert("Password login website sekarang sama dengan password API Rumahweb. Untuk menggantinya, ubah AKTIVITAS_API_PASSWORD (Admin) atau AKTIVITAS_VIEWER_PASSWORD (Lihat Saja) melalui cPanel > Python > aktivitas-api > Environment variables, lalu restart Python.");
+  if (!isAdminMode || apiRole !== "operator") return openAdminUnlockModal();
+  const adminEl = document.getElementById("settingAdminPass");
+  const viewerEl = document.getElementById("settingViewerPass");
+  if (adminEl) {
+    adminEl.value = "";
+    adminEl.placeholder = "Password Admin baru (minimal 12 karakter)";
+  }
+  if (viewerEl) {
+    viewerEl.value = "";
+    viewerEl.placeholder = "Password Lihat Saja baru (minimal 12 karakter)";
+  }
+  document.getElementById("passwordModal").classList.add("open");
 }
 
-function saveNewPasswords(e) {
+async function saveNewPasswords(e) {
   e.preventDefault();
-  alert("Password tidak diubah. Gunakan cPanel Rumahweb agar perubahan berlaku untuk semua perangkat.");
+  if (!isAdminMode || apiRole !== "operator" || !apiToken) {
+    alert("Hanya Admin yang dapat mengganti password saat terhubung ke Rumahweb.");
+    return;
+  }
+  const adminPass = document.getElementById("settingAdminPass").value.trim();
+  const viewerPass = document.getElementById("settingViewerPass").value.trim();
+  if (adminPass.length < 12 || viewerPass.length < 12 || adminPass === viewerPass) {
+    alert("Masukkan dua password baru yang berbeda, masing-masing minimal 12 karakter.");
+    return;
+  }
+  if (!confirm("Ganti password Admin dan Lihat Saja untuk semua perangkat? Semua pengguna perlu login ulang.")) return;
+  const button = e.target.querySelector('[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    await apiRequest("change_passwords", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiToken}`
+      },
+      body: JSON.stringify({ adminPass, viewerPass })
+    });
+    closeModal("passwordModal");
+    alert("Password berhasil diganti di Rumahweb. Silakan login ulang dengan password baru.");
+    logoutSystem();
+  } catch (error) {
+    alert("Gagal mengganti password: " + error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function updateAuthUI() {
